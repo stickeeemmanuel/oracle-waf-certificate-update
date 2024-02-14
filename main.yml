@@ -1,0 +1,76 @@
+---
+- name: Copy SSL certificates
+  hosts: daily-pricing-monitor
+  become: true
+  become_user: root
+  vars_files:
+    - vars/secrets.yml
+
+  tasks:
+    - name: GfK server - Fetch pem keys to local computer
+      tags:
+        gfk-tasks
+      block:
+        - name: GfK server - Get latest fullchain key and private key
+          ansible.builtin.shell: |
+            echo fullchain=$(ls -t /etc/letsencrypt/live/daily-pricing-monitor.gfk.com/fullchain.pem | head -n 1)
+            echo privkey=$(ls -t /etc/letsencrypt/live/daily-pricing-monitor.gfk.com/privkey.pem | head -n 1)
+          register: output
+          changed_when: false
+
+        - name: GfK server - Set fact for fullchain and privkey  
+          ansible.builtin.set_fact: 
+            fullchain_file: "{{ output.stdout_lines[0].split('=')[1] }}"
+            privkey_file: "{{ output.stdout_lines[1].split('=')[1] }}"
+          changed_when: false
+
+        - name: GfK server - Copy keys to local computer
+          ansible.builtin.fetch:
+            src: "{{ item }}"
+            dest: "{{ playbook_dir }}/"
+            flat: yes
+          with_items:
+            - "{{ fullchain_file }}"
+            - "{{ privkey_file }}"
+          changed_when: false
+
+        - name: GfK server - Rename key files
+          delegate_to: localhost
+          ansible.builtin.shell: |
+            mv "{{ playbook_dir }}/{{ item.src | regex_replace('^.*/', '') }}" \
+            "{{ playbook_dir }}/{{ item.dest }}"
+          with_items:
+            - { src: "{{ fullchain_file }}", dest: "gfk_fullchain.pem" }
+            - { src: "{{ privkey_file }}", dest: "gfk_privkey.pem" }
+          changed_when: false
+
+    - name: OCI waas certificate renewal
+      tags:
+        oci-tasks
+      delegate_to: localhost
+      collections:
+        - oracle.oci
+      block:
+        - name: OCI - Create a waas certificate
+          oci_waas_certificate:
+            compartment_id: "{{ compartment_id }}"
+            display_name: "daily-pricing-monitor.gfk.com{{ lookup('pipe', 'date +%Y%m%d') }}"
+            certificate_data: "{{ lookup('file', 'gfk_fullchain.pem') }}"
+            private_key_data: "{{ lookup('file', 'gfk_privkey.pem') }}"
+            is_trust_verification_disabled: true
+          register: new_cert_info
+          # no_log: true
+
+        - name: OCI - Update certificate with newly created one
+          oci_waas_policy:
+            compartment_id: "{{ compartment_id }}"
+            display_name: "{{ item.name }}"
+            domain: "{{ item.domain }}"
+            waas_policy_id: "{{ item.waas_policy_id }}"
+            policy_config:
+              certificate_id: "{{ new_cert_info.waas_certificate.id }}"
+          with_items:
+            - name: daily-pricing-monitor.gfk.com
+              domain: daily-pricing-monitor.gfk.com
+              waas_policy_id: "{{ gfk_waas_policy_id }}"
+          # no_log: true
