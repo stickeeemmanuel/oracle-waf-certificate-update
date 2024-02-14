@@ -59,7 +59,7 @@
             private_key_data: "{{ lookup('file', 'gfk_privkey.pem') }}"
             is_trust_verification_disabled: true
           register: new_cert_info
-          # no_log: true
+          no_log: true
 
         - name: OCI - Update certificate with newly created one
           oci_waas_policy:
@@ -73,4 +73,4 @@
             - name: daily-pricing-monitor.gfk.com
               domain: daily-pricing-monitor.gfk.com
               waas_policy_id: "{{ gfk_waas_policy_id }}"
-          # no_log: true
+          no_log: true
